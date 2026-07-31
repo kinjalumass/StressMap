@@ -67,24 +67,17 @@ print(
 PY
 )"
 
-SHARD_SIZE=$(
-    (
-        TOTAL_ORIGINS
-        + NUM_SHARDS
-        - 1
-    )
-    / NUM_SHARDS
-)
+SHARD_SIZE=$((
+    (TOTAL_ORIGINS + NUM_SHARDS - 1) / NUM_SHARDS
+))
 
-START_INDEX=$(
-    SLURM_ARRAY_TASK_ID
-    * SHARD_SIZE
-)
+START_INDEX=$((
+    SLURM_ARRAY_TASK_ID * SHARD_SIZE
+))
 
-END_INDEX=$(
-    START_INDEX
-    + SHARD_SIZE
-)
+END_INDEX=$((
+    START_INDEX + SHARD_SIZE
+))
 
 if (( END_INDEX > TOTAL_ORIGINS )); then
     END_INDEX="${TOTAL_ORIGINS}"

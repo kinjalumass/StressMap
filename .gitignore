@@ -9,4 +9,5 @@ test.py
 temp.py
 temp.ipynb
 test.ipynb
-secrets/
+secrets/logs/*.out
+logs/*.err
