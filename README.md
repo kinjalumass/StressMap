@@ -32,3 +32,8 @@ You can run the mapbox webpage with the following command
 Vist http://localhost:8000 to view the rendered LTS.
 
 *Please note that the geojson file for Boston is 40mb and may render slowly with artifacts*
+
+## Additional workflows
+
+- [Census-to-node population assignment](docs/census_assignment.md)
+- [Opportunity accessibility analysis](docs/opportunity_accessibility.md)
