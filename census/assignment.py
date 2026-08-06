@@ -68,8 +68,61 @@ def assign_population_to_nodes_by_tract_area(
     nodes = nodes_gdf.copy()
     tracts = tracts_gdf.copy()
 
+    if nodes.crs is None:
+        raise ValueError("nodes_gdf must have a CRS.")
+
+    if tracts.crs is None:
+        raise ValueError("tracts_gdf must have a CRS.")
+
+    required_columns = {population_col, tract_id_col}
+    missing_columns = required_columns.difference(tracts.columns)
+    if missing_columns:
+        raise ValueError(
+            f"Tract data is missing required columns: {sorted(missing_columns)}"
+        )
+
+    if tracts[tract_id_col].isna().any():
+        raise ValueError(f"{tract_id_col} contains missing values.")
+
+    tract_ids_as_text = tracts[tract_id_col].astype(str)
+    if tract_ids_as_text.duplicated().any():
+        duplicate_ids = sorted(
+            tract_ids_as_text[tract_ids_as_text.duplicated()].unique()
+        )
+        raise ValueError(
+            f"{tract_id_col} contains duplicate values: {duplicate_ids}"
+        )
+
+    population_values = pd.to_numeric(
+        tracts[population_col],
+        errors="coerce",
+    )
+
+    if population_values.isna().any():
+        raise ValueError(
+            f"{population_col} must contain only valid numeric values."
+        )
+
+    if (population_values < 0).any():
+        raise ValueError(
+            f"{population_col} must not contain negative values."
+        )
+
+    tracts[population_col] = population_values
+
     candidate_buffer_m = float(candidate_buffer_m)
     min_region_overlap_share = float(min_region_overlap_share)
+
+    unassigned_rows = []
+
+    def record_unassigned(tract, reason):
+        unassigned_rows.append(
+            {
+                tract_id_col: tract[tract_id_col],
+                population_col: tract[population_col],
+                "reason": reason,
+            }
+        )
 
     if candidate_buffer_m < 0:
         raise ValueError("candidate_buffer_m must be non-negative.")
@@ -111,14 +164,26 @@ def assign_population_to_nodes_by_tract_area(
         )
 
     if region_boundary is not None:
-        tracts = tracts[tracts.geometry.intersects(region_boundary)].copy()
+        intersects_region = tracts.geometry.intersects(region_boundary)
+
+        for _, tract in tracts.loc[~intersects_region].iterrows():
+            record_unassigned(tract, "outside_region")
+
+        tracts = tracts.loc[intersects_region].copy()
 
         if min_region_overlap_share > 0 and not tracts.empty:
             tract_areas = tracts.geometry.area
             overlap_areas = tracts.geometry.intersection(region_boundary).area
             overlap_share = overlap_areas / tract_areas
+            meets_overlap = overlap_share >= min_region_overlap_share
 
-            tracts = tracts[overlap_share >= min_region_overlap_share].copy()
+            for _, tract in tracts.loc[~meets_overlap].iterrows():
+                record_unassigned(
+                    tract,
+                    "below_minimum_region_overlap",
+                )
+
+            tracts = tracts.loc[meets_overlap].copy()
 
     node_sindex = nodes.sindex
     allocation_rows = []
@@ -132,11 +197,13 @@ def assign_population_to_nodes_by_tract_area(
         tract_geom = tract.geometry
 
         if tract_geom is None or tract_geom.is_empty:
+            record_unassigned(tract, "missing_or_empty_geometry")
             continue
 
         tract_area = tract_geom.area
 
         if tract_area == 0:
+            record_unassigned(tract, "zero_area_geometry")
             continue
 
         candidate_geom = (
@@ -149,11 +216,13 @@ def assign_population_to_nodes_by_tract_area(
         tract_nodes = nodes.iloc[candidate_idx].copy()
 
         if tract_nodes.empty:
+            record_unassigned(tract, "no_candidate_nodes")
             continue
 
         tract_nodes = tract_nodes[tract_nodes.geometry.intersects(candidate_geom)].copy()
 
         if tract_nodes.empty:
+            record_unassigned(tract, "no_candidate_nodes")
             continue
 
         tract_nodes = tract_nodes.sort_values("node_id")
@@ -171,7 +240,8 @@ def assign_population_to_nodes_by_tract_area(
 
         else:
             points = list(tract_nodes.geometry)
-            multipoint = MultiPoint(points)
+            coords = [(point.x, point.y) for point in points]
+            multipoint = MultiPoint(coords)
 
             vor = voronoi_diagram(
                 multipoint,
@@ -180,7 +250,6 @@ def assign_population_to_nodes_by_tract_area(
             )
 
             node_ids = list(tract_nodes["node_id"])
-            coords = [(point.x, point.y) for point in points]
             tree = cKDTree(coords)
 
             area_by_node = {}
@@ -217,6 +286,7 @@ def assign_population_to_nodes_by_tract_area(
         share_total = sum(row["raw_area_share"] for row in tract_rows)
 
         if share_total == 0:
+            record_unassigned(tract, "zero_voronoi_coverage")
             continue
 
         for row in tract_rows:
@@ -227,18 +297,56 @@ def assign_population_to_nodes_by_tract_area(
             row["assigned_population"] = tract[population_col] * normalized_share
             allocation_rows.append(row)
 
-    allocation = pd.DataFrame(allocation_rows)
+    allocation_columns = [
+        "node_id",
+        tract_id_col,
+        "area_share",
+        "raw_area_share",
+        "tract_coverage_ratio",
+        "assigned_population",
+    ]
+    allocation = pd.DataFrame(
+        allocation_rows,
+        columns=allocation_columns,
+    )
+
+    unassigned_columns = [
+        tract_id_col,
+        population_col,
+        "reason",
+    ]
+    unassigned = pd.DataFrame(
+        unassigned_rows,
+        columns=unassigned_columns,
+    )
+
+    if not unassigned.empty:
+        unassigned = unassigned.sort_values(
+            [tract_id_col, "reason"],
+            key=lambda series: series.astype(str),
+        ).reset_index(drop=True)
 
     if allocation.empty:
         output = nodes.copy()
         output["assigned_population"] = 0
-        return output, allocation
+        return output, allocation, unassigned
 
-    allocation = allocation.sort_values([tract_id_col, "node_id"]).reset_index(drop=True)
+    allocation = allocation.sort_values(
+        [tract_id_col, "node_id"]
+    ).reset_index(drop=True)
 
-    node_population = allocation.groupby("node_id", as_index=False)["assigned_population"].sum()
+    node_population = allocation.groupby(
+        "node_id",
+        as_index=False,
+    )["assigned_population"].sum()
 
-    output = nodes.merge(node_population, on="node_id", how="left")
-    output["assigned_population"] = output["assigned_population"].fillna(0)
+    output = nodes.merge(
+        node_population,
+        on="node_id",
+        how="left",
+    )
+    output["assigned_population"] = (
+        output["assigned_population"].fillna(0)
+    )
 
-    return output, allocation
+    return output, allocation, unassigned
