@@ -14,6 +14,8 @@ Generated data belongs under `data/`, which is excluded from Git.
 - `accessibility/opportunity_access.py`: sums opportunities over reachable nodes.
 - `accessibility/profile_access.py`: compares multiple cycling profiles.
 - `accessibility/run_batch.py`: runs deterministic, resumable origin slices.
+- `accessibility/trip_generation.py`: generates population-weighted OD demand.
+- `accessibility/visualize_trips.py`: creates diagnostic OD HTML and GeoJSON outputs.
 - `accessibility/merge_shards.py`: validates and merges batch outputs.
 - `accessibility/population_weighting.py`: attaches Census-assigned population.
 - `accessibility/population_summaries.py`: creates regional and tract summaries.
@@ -215,6 +217,14 @@ Run the test suite with:
 ```bash
 PYTHONPATH=. python -m pytest -q tests
 ```
+
+## Modeled OD demand and diagnostic maps
+
+Population-weighted trip generation and diagnostic straight-line OD
+visualization are documented in `docs/trip_generation.md`.
+
+These modeled trips complement the cumulative opportunity-access workflow.
+The diagnostic OD lines are not routed bicycle paths.
 
 ## Limitations
 

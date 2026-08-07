@@ -1,6 +1,7 @@
 import math
 
 import networkx as nx
+import osmnx as ox
 import pandas as pd
 import pytest
 
@@ -241,3 +242,74 @@ def test_parallel_edges_are_matched_by_key():
         output[1][2][1]["travel_time_seconds"],
         48.0,
     )
+
+
+def test_osm_tags_survive_graphml_round_trip(
+    tmp_path,
+) -> None:
+    """Existing OSM way tags survive graph preparation and saving."""
+    graph = make_graph()
+
+    graph.graph["crs"] = "EPSG:4326"
+
+    graph.nodes[1].update(
+        x=-71.100,
+        y=42.350,
+    )
+
+    graph.nodes[2].update(
+        x=-71.090,
+        y=42.350,
+    )
+
+    expected_tags = {
+        "highway": "residential",
+        "name": "Test Street",
+        "cycleway": "lane",
+        "surface": "asphalt",
+    }
+
+    graph[1][2][0].update(expected_tags)
+
+    output, diagnostics = build_accessibility_graph(
+        graph,
+        make_lts_row(),
+    )
+
+    assert diagnostics.iloc[0]["status"] == "kept"
+
+    prepared_edge = output[1][2][0]
+
+    for attribute, expected in expected_tags.items():
+        assert prepared_edge[attribute] == expected
+
+    graph_path = tmp_path / "accessibility.graphml"
+
+    ox.save_graphml(
+        output,
+        filepath=graph_path,
+    )
+
+    reloaded = ox.load_graphml(graph_path)
+
+    source_node = 1 if 1 in reloaded else "1"
+    target_node = 2 if 2 in reloaded else "2"
+
+    edge_collection = reloaded.get_edge_data(
+        source_node,
+        target_node,
+    )
+
+    assert edge_collection is not None
+
+    reloaded_edge = next(
+        iter(edge_collection.values())
+    )
+
+    for attribute, expected in expected_tags.items():
+        assert str(reloaded_edge[attribute]) == expected
+
+    assert int(reloaded_edge["directional_lts"]) == 2
+    assert float(
+        reloaded_edge["travel_time_seconds"]
+    ) == pytest.approx(24.0)
